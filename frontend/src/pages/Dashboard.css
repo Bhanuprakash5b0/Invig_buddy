@@ -1,0 +1,585 @@
+.dashboard {
+  display: flex;
+  min-height: 100vh;
+  background: #0f0f0f;
+  color: #ffffff;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Sidebar Styles */
+.sidebar {
+  width: 280px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border-right: 1px solid #2a2a2a;
+  transition: all 0.3s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar.closed {
+  width: 80px;
+}
+
+.sidebar-header {
+  padding: 1.5rem;
+  border-bottom: 1px solid #2a2a2a;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.sidebar-header h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  background: linear-gradient(135deg, #00b4db, #0083b0);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.toggle-sidebar {
+  background: none;
+  border: none;
+  color: #00b4db;
+  cursor: pointer;
+  font-size: 1.2rem;
+  padding: 0.5rem;
+  border-radius: 5px;
+  transition: all 0.3s ease;
+}
+
+.toggle-sidebar:hover {
+  background: rgba(0, 180, 219, 0.1);
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 1rem 0;
+}
+
+.nav-item {
+  width: 100%;
+  padding: 1rem 1.5rem;
+  background: none;
+  border: none;
+  color: #b0b0b0;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ffffff;
+}
+
+.nav-item.active {
+  background: rgba(0, 180, 219, 0.2);
+  color: #00b4db;
+  border-right: 3px solid #00b4db;
+}
+
+.sidebar-footer {
+  padding: 1.5rem;
+  border-top: 1px solid #2a2a2a;
+}
+
+.logout-btn {
+  width: 100%;
+  padding: 0.8rem;
+  background: rgba(255, 71, 87, 0.1);
+  border: 1px solid #ff4757;
+  color: #ff4757;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 1rem;
+}
+
+.logout-btn:hover {
+  background: #ff4757;
+  color: white;
+}
+
+/* Main Content Styles */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #0f0f0f;
+}
+
+.dashboard-header {
+  padding: 1.5rem 2rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid #2a2a2a;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-left h1 {
+  margin: 0;
+  font-size: 1.8rem;
+  background: linear-gradient(135deg, #ffffff, #00b4db);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.header-left p {
+  margin: 0.5rem 0 0 0;
+  color: #b0b0b0;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.notification-bell {
+  position: relative;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0.5rem;
+}
+
+.notification-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: #ff4757;
+  color: white;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  background: linear-gradient(135deg, #00b4db, #0083b0);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+/* Dashboard Content */
+.dashboard-content {
+  flex: 1;
+  padding: 2rem;
+  overflow-y: auto;
+}
+
+.tab-content {
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Stats Grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0, 180, 219, 0.3);
+}
+
+.stat-icon {
+  font-size: 2rem;
+}
+
+.stat-info h3 {
+  margin: 0;
+  font-size: 2rem;
+  color: #00b4db;
+}
+
+.stat-info p {
+  margin: 0.25rem 0 0 0;
+  color: #b0b0b0;
+}
+
+/* Overview Grid */
+.overview-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.5rem;
+}
+
+.overview-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.overview-card h3 {
+  margin: 0 0 1.5rem 0;
+  color: #ffffff;
+  font-size: 1.3rem;
+}
+
+/* Camera Feeds Grid */
+.camera-feeds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.camera-feed-item {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.camera-header {
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.camera-icon {
+  font-size: 1.2rem;
+}
+
+.camera-header h4 {
+  margin: 0;
+  flex: 1;
+  font-size: 1rem;
+  color: #e6eef8;
+}
+
+/* Container that enforces 16:9 aspect ratio */
+.video-container {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.8));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Use the container for the primary preview area */
+.camera-preview {
+  margin-bottom: 8px;
+  padding: 0;
+  background: transparent;
+  border-radius: 6px;
+  border: none;
+  display: block;
+}
+
+/* Video element fills the 16:9 container */
+.video-feed {
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* cover keeps the frame filled; use 'contain' if you prefer full visibility */
+  display: block;
+  border-radius: 0; /* container already has radius */
+  background: #000;
+}
+
+/* Placeholder also fits the 16:9 container */
+.video-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa6b2;
+  background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.015));
+  border: 1px dashed rgba(255,255,255,0.03);
+  padding: 12px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* Processed-output region below card also keeps 16:9 content if a video is shown */
+.processed-output {
+  margin-top: 10px;
+  width: 100%;
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(255,255,255,0.008), rgba(255,255,255,0.006));
+  border: 1px dashed rgba(255,255,255,0.03);
+  min-height: 0;
+}
+
+/* When a video is added inside processed-output, force it into 16:9 too */
+.processed-output video,
+.processed-output .video-container {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+}
+
+/* Camera grid & card: enforce rectangular boxes and consistent 16:9 preview area */
+.cameras-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); /* each card keeps a good width */
+  gap: 1rem;
+}
+
+/* Card container — keeps content organized, dark themed */
+.camera-card,
+.camera-feed-item {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 1px;
+}
+
+/* Preview area: use padding-top trick to force 16:9 rectangle regardless of card width */
+.camera-preview {
+  position: relative;
+  width: 100%;
+  padding-top: 56.25%; /* 16:9 */
+  border-radius: 6px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.8));
+  border: 1px solid rgba(255,255,255,0.03);
+}
+
+/* Ensure video or placeholder fills the 16:9 region */
+.camera-preview > .video-feed,
+.camera-preview > video,
+.camera-preview > .video-placeholder,
+.camera-preview > .video-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Keep processed-output region consistent but smaller and optional below card */
+.processed-output {
+  margin-top: 10px;
+  width: 100%;
+  border-radius: 6px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(255,255,255,0.008), rgba(255,255,255,0.006));
+  border: 1px dashed rgba(255,255,255,0.03);
+  min-height: 0;
+}
+
+/* When a video is added inside processed-output, force it into 16:9 too */
+.processed-output video,
+.processed-output .video-container {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+}
+
+/* Small screens: reduce min width but preserve 16:9 visual */
+@media (max-width: 640px) {
+  .cameras-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .camera-preview {
+    padding-top: 56.25%;
+  }
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .sidebar {
+    width: 80px;
+  }
+  
+  .sidebar.closed {
+    width: 0;
+    overflow: hidden;
+  }
+  
+  .nav-item span {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-header {
+    flex-direction: column;
+    gap: 1rem;
+    text-align: center;
+  }
+  
+  .header-right {
+    justify-content: center;
+  }
+  
+  .stats-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  
+  .cameras-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .tab-header {
+    flex-direction: column;
+    gap: 1rem;
+    text-align: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .dashboard-content {
+    padding: 1rem;
+  }
+  
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .quick-actions {
+    grid-template-columns: 1fr;
+  }
+  
+  .camera-actions {
+    flex-direction: column;
+  }
+  /* Camera Actions */
+.camera-actions {
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.camera-action-btn {
+  flex: 1;
+  min-width: 100px;
+  padding: 0.75rem 0.5rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-size: 0.85rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+}
+
+.camera-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+.camera-action-btn:not(:disabled):hover {
+  transform: translateY(-2px);
+}
+
+.view-btn {
+  background: rgba(0, 180, 219, 0.1);
+  color: #00b4db;
+  border: 1px solid rgba(0, 180, 219, 0.3);
+}
+
+.view-btn:not(:disabled):hover {
+  background: rgba(0, 180, 219, 0.2);
+  box-shadow: 0 4px 12px rgba(0, 180, 219, 0.3);
+}
+
+.configure-btn {
+  background: rgba(255, 165, 2, 0.1);
+  color: #ffa502;
+  border: 1px solid rgba(255, 165, 2, 0.3);
+}
+
+.configure-btn:hover {
+  background: rgba(255, 165, 2, 0.2);
+  box-shadow: 0 4px 12px rgba(255, 165, 2, 0.3);
+}
+
+.capture-btn {
+  background: rgba(46, 213, 115, 0.1);
+  color: #2ed573;
+  border: 1px solid rgba(46, 213, 115, 0.3);
+}
+
+.capture-btn:not(:disabled):hover {
+  background: rgba(46, 213, 115, 0.2);
+  box-shadow: 0 4px 12px rgba(46, 213, 115, 0.3);
+}
+
+/* Responsive adjustments for camera actions */
+@media (max-width: 768px) {
+  .camera-actions {
+    flex-direction: column;
+  }
+  
+  .camera-action-btn {
+    min-width: auto;
+  }
+}
+}
