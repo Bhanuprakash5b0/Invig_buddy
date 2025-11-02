@@ -20,8 +20,8 @@ const Dashboard = () => {
   });
   const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
   const [evidenceImage, setEvidenceImage] = useState(null);
-  const [alerts, setAlerts] = useState([]); // Real alerts from backend
-  const [selectedAlert, setSelectedAlert] = useState(null); // Currently viewing alert
+  const [alerts, setAlerts] = useState([]); // Real alerts from API
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
 
   const navigate = useNavigate();
 
@@ -82,6 +82,83 @@ const Dashboard = () => {
       case 'cc': return '📹';
       default: return '📷';
     }
+  };
+
+  // Fetch alerts from API
+  const fetchAlerts = async () => {
+    setLoadingAlerts(true);
+    try {
+      const response = await fetch('http://localhost:5000/api/alerts');
+      if (response.ok) {
+        const data = await response.json();
+        setAlerts(data.alerts || []);
+      } else {
+        console.error('Failed to fetch alerts');
+      }
+    } catch (error) {
+      console.error('Error fetching alerts:', error);
+    } finally {
+      setLoadingAlerts(false);
+    }
+  };
+
+  // Delete alert by ID
+  const deleteAlert = async (alertId) => {
+    if (!window.confirm('Are you sure you want to delete this alert?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`http://localhost:5000/api/alerts/${alertId}`, {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        // Remove from local state
+        setAlerts(prevAlerts => prevAlerts.filter(alert => alert.id !== alertId));
+        alert('Alert deleted successfully');
+      } else {
+        const data = await response.json();
+        alert('Failed to delete alert: ' + (data.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error deleting alert:', error);
+      alert('Error deleting alert');
+    }
+  };
+
+  // Auto-refresh alerts when on alerts tab
+  useEffect(() => {
+    fetchAlerts(); // Fetch on mount
+
+    // Auto-refresh every 3 seconds when on alerts tab
+    let interval;
+    if (activeTab === 'alerts') {
+      interval = setInterval(fetchAlerts, 3000);
+    }
+
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [activeTab]);
+
+  // Format timestamp for display
+  const formatTimestamp = (timestamp) => {
+    try {
+      const date = new Date(timestamp);
+      return date.toLocaleString();
+    } catch (e) {
+      return timestamp;
+    }
+  };
+
+  // Get alert type display name
+  const getAlertTypeDisplay = (alertType) => {
+    if (alertType === 'web') return '📹 Webcam';
+    if (alertType === 'cctv') return '🎥 CCTV';
+    return alertType;
   };
 
   // ---------- Testing sample: upload + separate "Start Processing" ----------
@@ -286,75 +363,17 @@ const Dashboard = () => {
     setUploadedFiles(prev => ({ ...prev, [cameraId]: null }));
   };
 
-  // ================================
-  //  ALERTS FUNCTIONS
-  // ================================
-  const fetchAlerts = async () => {
-    try {
-      const response = await fetch('http://localhost:5000/api/alerts');
-      if (response.ok) {
-        const data = await response.json();
-        setAlerts(data);
-      } else {
-        console.error('Failed to fetch alerts');
-      }
-    } catch (error) {
-      console.error('Error fetching alerts:', error);
-    }
-  };
-
-  const deleteAlert = async (alertId) => {
-    if (!window.confirm('Are you sure you want to delete this alert?')) {
-      return;
-    }
-
-    try {
-      const response = await fetch(`http://localhost:5000/api/alerts/${alertId}`, {
-        method: 'DELETE'
-      });
-
-      if (response.ok) {
-        // Remove alert from state
-        setAlerts(prevAlerts => prevAlerts.filter(alert => alert.id !== alertId));
-        alert('Alert deleted successfully');
-      } else {
-        const error = await response.json();
-        alert('Failed to delete alert: ' + (error.error || 'Unknown error'));
-      }
-    } catch (error) {
-      console.error('Error deleting alert:', error);
-      alert('Failed to delete alert: ' + error.message);
-    }
-  };
-
   const openEvidence = (alert) => {
-    // use image_url from alert
-    const img = alert.image_url || alert.imageUrl || '/placeholder-evidence.jpg';
+    // use alert.imageurl for evidence image
+    const img = alert.imageurl || alert.image || alert.evidenceUrl || '/placeholder-evidence.jpg';
     setEvidenceImage(img);
-    setSelectedAlert(alert);
     setEvidenceModalOpen(true);
   };
 
   const closeEvidence = () => {
     setEvidenceModalOpen(false);
     setEvidenceImage(null);
-    setSelectedAlert(null);
   };
-
-  // Fetch alerts on mount and when alerts tab is active
-  useEffect(() => {
-    fetchAlerts();
-    
-    // Set up interval to periodically fetch alerts when on alerts tab
-    let interval;
-    if (activeTab === 'alerts') {
-      interval = setInterval(fetchAlerts, 2000); // Poll every 2 seconds
-    }
-
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [activeTab]);
 
   return (
     <div className="dashboard">
@@ -590,25 +609,21 @@ const Dashboard = () => {
               <div className="tab-header">
                 <h2>Security Alerts</h2>
                 <div className="filter-options">
-                  <select>
-                    <option>All Severity</option>
-                    <option>High</option>
-                    <option>Medium</option>
-                    <option>Low</option>
-                  </select>
-                  <select>
-                    <option>All Status</option>
-                    <option>New</option>
-                    <option>Reviewed</option>
-                    <option>Resolved</option>
-                  </select>
+                  <button className="primary-btn" onClick={fetchAlerts} disabled={loadingAlerts}>
+                    {loadingAlerts ? '🔄 Refreshing...' : '🔄 Refresh'}
+                  </button>
                 </div>
               </div>
 
               <div className="alerts-table">
-                {alerts.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
-                    <p>No alerts found. Start monitoring to capture suspicious activities.</p>
+                {loadingAlerts && alerts.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <p>Loading alerts...</p>
+                  </div>
+                ) : alerts.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px' }}>
+                    <p>No alerts detected yet.</p>
+                    <p style={{ color: '#6b7280', fontSize: '14px' }}>Start monitoring with webcam or CCTV to detect suspicious activities.</p>
                   </div>
                 ) : (
                   <table>
@@ -617,7 +632,6 @@ const Dashboard = () => {
                         <th>Alert Type</th>
                         <th>Severity</th>
                         <th>Timestamp</th>
-                        <th>Camera ID</th>
                         <th>Actions</th>
                       </tr>
                     </thead>
@@ -627,16 +641,15 @@ const Dashboard = () => {
                           <td>
                             <div className="alert-type">
                               <div className="alert-dot" style={{ backgroundColor: getSeverityColor(alert.severity) }}></div>
-                              {alert.alert_type === 'web' ? 'Webcam Alert' : 'CCTV Alert'}
+                              {getAlertTypeDisplay(alert.alert_type)}
                             </div>
                           </td>
                           <td>
                             <span className={`severity-badge ${alert.severity}`}>
-                              {alert.severity}
+                              {alert.severity.toUpperCase()}
                             </span>
                           </td>
-                          <td>{alert.timestamp}</td>
-                          <td>{alert.camera_id || 'N/A'}</td>
+                          <td>{formatTimestamp(alert.timestamp)}</td>
                           <td>
                             <div className="action-buttons">
                               <button className="icon-btn" title="View Evidence" onClick={() => openEvidence(alert)}>👁️</button>

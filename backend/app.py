@@ -10,6 +10,7 @@ from werkzeug.utils import secure_filename
 import base64
 import time
 import json
+import threading
 
 
 # ================================
@@ -20,6 +21,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})  # enable CORS for all routes
 
 UPLOAD_FOLDER = 'uploads'
 PROCESSED_FOLDER = 'processed'
+DB_PATH = 'invigilation.db'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
@@ -29,23 +31,26 @@ model = YOLO('./best.pt')   # your trained model path
 ALLOWED_EXT = {'mp4', 'mov', 'avi', 'mkv', 'webm'}
 
 # Class names mapping
-CLASS_NAMES = ['backwardMove', 'correctPosture', 'leftSideMove', 'passingNotes', 'rightSideMove']
-TARGET_CLASSES = [0, 1, 2, 3, 4]  # Classes to track for alerts
+CLASS_NAMES = {
+    0: 'backwardMove',
+    1: 'correctPosture',
+    2: 'leftSideMove',
+    3: 'passingNotes',
+    4: 'rightSideMove'
+}
 
-# Rate limiting for alerts (avoid spam)
-last_alert_time = {}
+# Classes to alert on
+ALERT_CLASSES = [0, 2, 3, 4]  # backwardMove, leftSideMove, passingNotes, rightSideMove
+
+# Lock for database operations
+db_lock = threading.Lock()
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXT
 
-# ================================
-#  DATABASE SETUP
-# ================================
-DATABASE = 'alerts.db'
-
+# Initialize database
 def init_db():
-    """Initialize the alerts database"""
-    conn = sqlite3.connect(DATABASE)
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS alerts (
@@ -53,101 +58,61 @@ def init_db():
             alert_type TEXT NOT NULL,
             severity TEXT NOT NULL,
             timestamp TEXT NOT NULL,
-            image_url TEXT NOT NULL,
-            camera_id TEXT
+            imageurl TEXT NOT NULL
         )
     ''')
     conn.commit()
     conn.close()
+    print("✅ Database initialized successfully")
 
-def get_db_connection():
-    """Get database connection"""
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Check if any alert classes are detected in results
+def check_alerts(results):
+    """Check if any alert classes (0,2,3,4) are detected in YOLO results"""
+    try:
+        if results[0].boxes is not None and len(results[0].boxes) > 0:
+            classes = results[0].boxes.cls.cpu().numpy()
+            confidences = results[0].boxes.conf.cpu().numpy()
+            for cls, conf in zip(classes, confidences):
+                if int(cls) in ALERT_CLASSES:
+                    return True, int(cls), float(conf)
+        return False, None, 0.0
+    except:
+        return False, None, 0.0
 
-# Initialize database on startup
-init_db()
-
-# ================================
-#  HELPER FUNCTIONS
-# ================================
-def determine_severity(confidence):
-    """Determine severity based on confidence"""
+# Determine severity based on confidence
+def get_severity(confidence):
     if confidence >= 0.7:
         return 'high'
-    elif confidence >= 0.4:
+    elif confidence >= 0.5:
         return 'medium'
     else:
         return 'low'
 
-def save_alert_frame(annotated_frame, alert_type, camera_id, base_url='http://localhost:5000'):
-    """Save annotated frame and create alert record"""
+# Save alert to database
+def save_alert(alert_type, severity, image_filename, imageurl):
+    """Save alert to database with thread safety"""
+    conn = None
     try:
-        # Generate unique filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"alert_{alert_type}_{camera_id}_{timestamp}.jpg"
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        
-        # Save frame
-        cv2.imwrite(filepath, annotated_frame)
-        
-        # Create image URL
-        image_url = f"{base_url}/uploads/{filename}"
-        
-        return filepath, image_url
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        # Use current timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute('''
+            INSERT INTO alerts (alert_type, severity, timestamp, imageurl)
+            VALUES (?, ?, ?, ?)
+        ''', (alert_type, severity, timestamp, imageurl))
+        conn.commit()
+        print(f"✅ Alert saved: {alert_type}, {severity}, {imageurl}")
     except Exception as e:
-        print(f"Error saving alert frame: {str(e)}")
-        return None, None
+        print(f"❌ Error saving alert: {str(e)}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
 
-def check_and_store_alerts(results, annotated_frame, alert_type, camera_id, base_url='http://localhost:5000'):
-    """Check for target classes and store alerts if found"""
-    detected_classes = []
-    
-    if results[0].boxes is not None and len(results[0].boxes) > 0:
-        for box in results[0].boxes:
-            class_id = int(box.cls[0])
-            confidence = float(box.conf[0])
-            
-            # Only alert for target classes (0,1,2,3,4)
-            if class_id in TARGET_CLASSES:
-                detected_classes.append((class_id, confidence))
-        
-        # If any target classes detected, save alert (with rate limiting)
-        if detected_classes:
-            # Rate limit: only one alert per camera every 3 seconds
-            camera_key = f"{alert_type}_{camera_id}"
-            current_time = time.time()
-            last_time = last_alert_time.get(camera_key, 0)
-            
-            if current_time - last_time < 3.0:
-                return False  # Skip this alert due to rate limiting
-            
-            # Use highest confidence for severity
-            max_confidence = max(detected_classes, key=lambda x: x[1])[1]
-            severity = determine_severity(max_confidence)
-            
-            # Save frame
-            filepath, image_url = save_alert_frame(annotated_frame, alert_type, camera_id, base_url)
-            
-            if image_url:
-                # Store in database
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO alerts (alert_type, severity, timestamp, image_url, camera_id)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (alert_type, severity, timestamp, image_url, camera_id))
-                conn.commit()
-                conn.close()
-                
-                # Update last alert time
-                last_alert_time[camera_key] = current_time
-                
-                return True
-    
-    return False
+# Initialize database on startup
+init_db()
 
 # ================================
 #  ROUTE: Upload + Process Video
@@ -204,6 +169,11 @@ def process_video():
     return jsonify({"processedVideoUrl": processed_url})
 
 
+# Serve uploaded files (images and videos)
+@app.route('/uploads/<path:filename>', methods=['GET'])
+def serve_uploaded(filename):
+    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=False)
+
 # Serve processed files with Range support so <video> can play progressively
 @app.route('/processed/<path:filename>', methods=['GET'])
 def serve_processed(filename):
@@ -237,11 +207,6 @@ def serve_processed(filename):
     resp.headers.add('Accept-Ranges', 'bytes')
     resp.headers.add('Content-Length', str(length))
     return resp
-
-# Serve uploaded alert images
-@app.route('/uploads/<path:filename>', methods=['GET'])
-def serve_upload(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=False)
 
 # Required Flask endpoints
 
@@ -282,20 +247,44 @@ def webcam_stream(camera_id):
         if not cap:
             return
         
-        base_url = request.host_url.rstrip('/')
+        frame_count = 0  # Counter to avoid processing every single frame
             
         while True:
             success, frame = cap.read()
             if not success:
                 break
+            
+            frame_count += 1
+            process_this_frame = (frame_count % 5 == 0)  # Process every 5th frame for alerts
                 
             try:
                 # Process frame with ML model and get annotated frame
                 results = model(frame, verbose=False)
                 processed_frame = results[0].plot()  # Get the annotated frame
                 
-                # Check for alerts and store if detected
-                check_and_store_alerts(results, processed_frame, 'web', camera_id, base_url)
+                # Check for alerts and save if detected
+                if process_this_frame:
+                    has_alert, class_id, confidence = check_alerts(results)
+                    if has_alert:
+                        severity = get_severity(confidence)
+                        class_name = CLASS_NAMES.get(class_id, 'unknown')
+                        
+                        # Save annotated frame to uploads folder
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        image_filename = f"webcam_{camera_id}_{timestamp}.jpg"
+                        image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                        cv2.imwrite(image_path, processed_frame)
+                        
+                        # Create image URL
+                        imageurl = f"{request.host_url.rstrip('/')}/uploads/{image_filename}"
+                        
+                        # Save alert to database in background
+                        with db_lock:
+                            threading.Thread(
+                                target=save_alert,
+                                args=('web', severity, image_filename, imageurl),
+                                daemon=True
+                            ).start()
                 
                 # Encode frame to base64
                 _, buffer = cv2.imencode('.jpg', processed_frame)
@@ -305,7 +294,6 @@ def webcam_stream(camera_id):
                 yield f"data: {json.dumps({'image': frame_bytes})}\n\n"
                 
                 time.sleep(1/30)  # Cap at 30 FPS
-                
                 
             except Exception as e:
                 print(f"Error processing frame: {str(e)}")
@@ -365,20 +353,44 @@ def cctv_stream(camera_id):
         if not cap:
             return
         
-        base_url = request.host_url.rstrip('/')
+        frame_count = 0  # Counter to avoid processing every single frame
             
         while True:
             success, frame = cap.read()
             if not success:
                 break
+            
+            frame_count += 1
+            process_this_frame = (frame_count % 5 == 0)  # Process every 5th frame for alerts
                 
             try:
                 # Process frame with ML model
                 results = model(frame, verbose=False)
                 processed_frame = results[0].plot()  # Get annotated frame
                 
-                # Check for alerts and store if detected
-                check_and_store_alerts(results, processed_frame, 'cctv', camera_id, base_url)
+                # Check for alerts and save if detected
+                if process_this_frame:
+                    has_alert, class_id, confidence = check_alerts(results)
+                    if has_alert:
+                        severity = get_severity(confidence)
+                        class_name = CLASS_NAMES.get(class_id, 'unknown')
+                        
+                        # Save annotated frame to uploads folder
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        image_filename = f"cctv_{camera_id}_{timestamp}.jpg"
+                        image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                        cv2.imwrite(image_path, processed_frame)
+                        
+                        # Create image URL
+                        imageurl = f"{request.host_url.rstrip('/')}/uploads/{image_filename}"
+                        
+                        # Save alert to database in background
+                        with db_lock:
+                            threading.Thread(
+                                target=save_alert,
+                                args=('cctv', severity, image_filename, imageurl),
+                                daemon=True
+                            ).start()
                 
                 # Encode frame to base64
                 _, buffer = cv2.imencode('.jpg', processed_frame)
@@ -423,72 +435,71 @@ def stop_cctv():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ================================
-#  ALERTS API ENDPOINTS
-# ================================
-
+# Get all alerts from database
 @app.route('/api/alerts', methods=['GET'])
 def get_alerts():
-    """Retrieve all alerts from database"""
     try:
-        conn = get_db_connection()
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM alerts ORDER BY timestamp DESC')
-        alerts = cursor.fetchall()
+        cursor.execute('''
+            SELECT id, alert_type, severity, timestamp, imageurl 
+            FROM alerts 
+            ORDER BY timestamp DESC
+        ''')
+        rows = cursor.fetchall()
         conn.close()
         
-        # Convert to list of dictionaries
-        alerts_list = []
-        for alert in alerts:
-            alerts_list.append({
-                'id': alert['id'],
-                'alert_type': alert['alert_type'],
-                'severity': alert['severity'],
-                'timestamp': alert['timestamp'],
-                'image_url': alert['image_url'],
-                'camera_id': alert['camera_id']
+        alerts = []
+        for row in rows:
+            alerts.append({
+                'id': row[0],
+                'alert_type': row[1],
+                'severity': row[2],
+                'timestamp': row[3],
+                'imageurl': row[4]
             })
         
-        return jsonify(alerts_list), 200
+        return jsonify({'alerts': alerts}), 200
     except Exception as e:
-        print(f"Error retrieving alerts: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+# Delete an alert by ID
 @app.route('/api/alerts/<int:alert_id>', methods=['DELETE'])
 def delete_alert(alert_id):
-    """Delete alert and associated image"""
     try:
-        conn = get_db_connection()
+        # First, get the image path from database
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        cursor.execute('SELECT imageurl FROM alerts WHERE id = ?', (alert_id,))
+        row = cursor.fetchone()
         
-        # Get alert details before deletion
-        cursor.execute('SELECT * FROM alerts WHERE id = ?', (alert_id,))
-        alert = cursor.fetchone()
-        
-        if not alert:
+        if not row:
             conn.close()
             return jsonify({'error': 'Alert not found'}), 404
         
-        # Extract filename from image_url
-        image_url = alert['image_url']
-        filename = image_url.split('/')[-1]
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        imageurl = row[0]
+        
+        # Extract filename from URL
+        image_filename = imageurl.split('/')[-1]
+        if '?' in image_filename:
+            image_filename = image_filename.split('?')[0]
+        image_path = os.path.join(UPLOAD_FOLDER, image_filename)
         
         # Delete from database
         cursor.execute('DELETE FROM alerts WHERE id = ?', (alert_id,))
         conn.commit()
         conn.close()
         
-        # Delete image file if exists
-        if os.path.exists(filepath):
+        # Delete image file if it exists
+        if os.path.exists(image_path):
             try:
-                os.remove(filepath)
+                os.remove(image_path)
+                print(f"✅ Deleted image: {image_path}")
             except Exception as e:
-                print(f"Error deleting image file: {str(e)}")
+                print(f"⚠️ Warning: Could not delete image {image_path}: {str(e)}")
         
         return jsonify({'message': 'Alert deleted successfully'}), 200
     except Exception as e:
-        print(f"Error deleting alert: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
