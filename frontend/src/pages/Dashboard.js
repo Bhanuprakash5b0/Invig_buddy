@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './Dashboard.css';
 
@@ -8,14 +8,20 @@ const Dashboard = () => {
   const [processedUrls, setProcessedUrls] = useState({}); // keyed by camera id
   const [uploadedFiles, setUploadedFiles] = useState({}); // keyed by camera id
   const [streaming, setStreaming] = useState({}); // keyed by camera id
+  const [webcamStream, setWebcamStream] = useState(null);
   const webcamRef = useRef(null); // hidden element for capturing webcam
   const captureCanvasRef = useRef(document.createElement('canvas'));
   const webcamIntervalRef = useRef(null);
   const webcamBusyRef = useRef(false);
+  const latestFrameRef = useRef(null);
   const [camerasState, setCamerasState] = useState({
     // keep RTSP editable per-camera in local state
     3: { rtspUrl: 'rtsp://your-camera-ip:554/stream' }
   });
+  const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
+  const [evidenceImage, setEvidenceImage] = useState(null);
+  const [alerts, setAlerts] = useState([]); // Real alerts from backend
+  const [selectedAlert, setSelectedAlert] = useState(null); // Currently viewing alert
 
   const navigate = useNavigate();
 
@@ -88,7 +94,6 @@ const Dashboard = () => {
   };
 
   const startProcessingTest = async (cameraId) => {
-    //e.preventDefault();
     const file = uploadedFiles[cameraId];
     if (!file) {
       alert('Please upload a video first.');
@@ -100,24 +105,25 @@ const Dashboard = () => {
     formData.append('cameraId', cameraId);
 
     try {
-      // ensure correct backend port
       const res = await fetch('http://localhost:5000/api/process-video', {
         method: 'POST',
         body: formData
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Processing failed');
+        let errBody = null;
+        try { errBody = await res.json(); } catch (_) {
+          try { errBody = await res.text(); } catch (__) { errBody = res.statusText; }
+        }
+        throw new Error((errBody && (errBody.error || errBody)) || 'Processing failed');
       }
 
       const data = await res.json();
-      console.log('Processing result', data);
+      console.log('Processed video URL:', data);
+
       if (data && data.processedVideoUrl) {
-        // add cache-buster to avoid stale caching between uploads
         const processedUrl = data.processedVideoUrl;
         const buster = `${processedUrl}${processedUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
-        // force React to re-render video element by using the URL as key
         setProcessedUrls(prev => ({ ...prev, [cameraId]: buster }));
       } else {
         throw new Error('No processedVideoUrl returned');
@@ -131,66 +137,69 @@ const Dashboard = () => {
   // Webcam: capture frames and send to backend for annotation; display MJPEG frames
   const startWebcamRecording = async (cameraId) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      if (webcamRef.current) {
-        webcamRef.current.srcObject = stream; // hidden capture element
-        await webcamRef.current.play().catch(() => {});
+      const response = await fetch('http://localhost:5000/api/start-webcam', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ camera_id: cameraId })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start webcam stream');
       }
 
-      setProcessedUrls(prev => ({ ...prev, [cameraId]: null }));
       setStreaming(prev => ({ ...prev, [cameraId]: true }));
 
-      // Start capture loop
-      if (webcamIntervalRef.current) clearInterval(webcamIntervalRef.current);
-      webcamIntervalRef.current = setInterval(async () => {
-        if (!webcamRef.current || webcamBusyRef.current) return;
-        const videoEl = webcamRef.current;
-        const canvas = captureCanvasRef.current;
-        const w = videoEl.videoWidth || 640;
-        const h = videoEl.videoHeight || 360;
-        if (w === 0 || h === 0) return;
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(videoEl, 0, 0, w, h);
-        webcamBusyRef.current = true;
-        canvas.toBlob(async (blob) => {
-          try {
-            if (!blob) return;
-            const form = new FormData();
-            form.append('frame', blob, 'frame.jpg');
-            const res = await fetch('http://localhost:5000/api/process-frame', {
-              method: 'POST',
-              body: form
-            });
-            if (!res.ok) throw new Error('frame process failed');
-            const annotatedBlob = await res.blob();
-            const url = URL.createObjectURL(annotatedBlob);
-            setProcessedUrls(prev => ({ ...prev, [cameraId]: url }));
-          } catch (e) {
-            // swallow intermittent errors to keep loop alive
-          } finally {
-            webcamBusyRef.current = false;
-          }
-        }, 'image/jpeg', 0.8);
-      }, 200);
+      const eventSource = new EventSource(`http://localhost:5000/api/webcam-stream/${cameraId}`);
+      
+      eventSource.onmessage = (event) => {
+        const frame = JSON.parse(event.data);
+        if (frame.image) {
+          const frameUrl = `data:image/jpeg;base64,${frame.image}`;
+          setProcessedUrls(prev => ({ ...prev, [cameraId]: frameUrl }));
+          latestFrameRef.current = frameUrl;
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('EventSource failed:', error);
+        eventSource.close();
+        stopWebcamRecording(cameraId);
+      };
+
+      setWebcamStream(eventSource);
+
     } catch (err) {
-      console.error('Error accessing webcam', err);
-      alert('Unable to access webcam');
+      console.error('Error starting webcam:', err);
+      alert('Failed to start webcam stream');
+      setStreaming(prev => ({ ...prev, [cameraId]: false }));
     }
   };
 
-  const stopWebcamRecording = (cameraId) => {
-    if (webcamIntervalRef.current) {
-      clearInterval(webcamIntervalRef.current);
-      webcamIntervalRef.current = null;
+  const stopWebcamRecording = async (cameraId) => {
+    try {
+      if (webcamStream) {
+        webcamStream.close();
+        setWebcamStream(null);
+      }
+
+      await fetch('http://localhost:5000/api/stop-webcam', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ camera_id: cameraId })
+      });
+
+      setProcessedUrls(prev => ({ ...prev, [cameraId]: null }));
+      latestFrameRef.current = null;
+
+    } catch (err) {
+      console.error('Error stopping webcam:', err);
+    } finally {
+      setStreaming(prev => ({ ...prev, [cameraId]: false }));
     }
-    if (webcamRef.current && webcamRef.current.srcObject) {
-      const tracks = webcamRef.current.srcObject.getTracks();
-      tracks.forEach(t => t.stop());
-      webcamRef.current.srcObject = null;
-    }
-    setStreaming(prev => ({ ...prev, [cameraId]: false }));
   };
 
   // ---------- CCTV: send RTSP to backend, receive processed stream URL for this camera ----------
@@ -202,45 +211,150 @@ const Dashboard = () => {
     }
 
     try {
-      const res = await fetch('http://localhost:5000/api/process-rtsp', {
+      // Initialize CCTV stream
+      const response = await fetch('http://localhost:5000/api/start-cctv', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cameraId, rtspUrl })
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          camera_id: cameraId,
+          rtsp_url: rtspUrl 
+        })
       });
 
-      const contentType = res.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        const data = await res.json();
-        const streamUrl = data.processedStreamUrl;
-        const buster = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
-        setProcessedUrls(prev => ({ ...prev, [cameraId]: buster }));
-      } else {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        setProcessedUrls(prev => ({ ...prev, [cameraId]: url }));
+      if (!response.ok) {
+        throw new Error('Failed to start CCTV stream');
       }
 
       setStreaming(prev => ({ ...prev, [cameraId]: true }));
+
+      // Start receiving processed frames
+      const eventSource = new EventSource(`http://localhost:5000/api/cctv-stream/${cameraId}`);
+      
+      eventSource.onmessage = (event) => {
+        const frame = JSON.parse(event.data);
+        if (frame.image) {
+          const frameUrl = `data:image/jpeg;base64,${frame.image}`;
+          setProcessedUrls(prev => ({ ...prev, [cameraId]: frameUrl }));
+        }
+      };
+
+      eventSource.onerror = (error) => {
+        console.error('CCTV EventSource failed:', error);
+        eventSource.close();
+        stopCCTVProcessing(cameraId);
+      };
+
+      setWebcamStream(eventSource); // Reuse webcam stream state
+
     } catch (err) {
-      console.error('Error starting CCTV processing', err);
-      alert('Failed to start CCTV processing');
+      console.error('Error starting CCTV:', err);
+      alert('Failed to start CCTV stream');
+      setStreaming(prev => ({ ...prev, [cameraId]: false }));
     }
   };
 
   const stopCCTVProcessing = async (cameraId) => {
     try {
-      await fetch('http://localhost:5000/api/stop-rtsp', {
+      // Close EventSource if exists
+      if (webcamStream) {
+        webcamStream.close();
+        setWebcamStream(null);
+      }
+
+      await fetch('http://localhost:5000/api/stop-cctv', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cameraId })
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ camera_id: cameraId })
       });
-    } catch (e) {
-      console.error('Error stopping CCTV processing', e);
+
+      // Clear the last frame
+      setProcessedUrls(prev => ({ ...prev, [cameraId]: null }));
+
+    } catch (err) {
+      console.error('Error stopping CCTV:', err);
     } finally {
       setStreaming(prev => ({ ...prev, [cameraId]: false }));
-      // keep last processedUrls[cameraId] if any
     }
   };
+
+  const clearProcessedOutput = (cameraId) => {
+    setProcessedUrls(prev => ({ ...prev, [cameraId]: null }));
+    setUploadedFiles(prev => ({ ...prev, [cameraId]: null }));
+  };
+
+  // ================================
+  //  ALERTS FUNCTIONS
+  // ================================
+  const fetchAlerts = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/alerts');
+      if (response.ok) {
+        const data = await response.json();
+        setAlerts(data);
+      } else {
+        console.error('Failed to fetch alerts');
+      }
+    } catch (error) {
+      console.error('Error fetching alerts:', error);
+    }
+  };
+
+  const deleteAlert = async (alertId) => {
+    if (!window.confirm('Are you sure you want to delete this alert?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`http://localhost:5000/api/alerts/${alertId}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        // Remove alert from state
+        setAlerts(prevAlerts => prevAlerts.filter(alert => alert.id !== alertId));
+        alert('Alert deleted successfully');
+      } else {
+        const error = await response.json();
+        alert('Failed to delete alert: ' + (error.error || 'Unknown error'));
+      }
+    } catch (error) {
+      console.error('Error deleting alert:', error);
+      alert('Failed to delete alert: ' + error.message);
+    }
+  };
+
+  const openEvidence = (alert) => {
+    // use image_url from alert
+    const img = alert.image_url || alert.imageUrl || '/placeholder-evidence.jpg';
+    setEvidenceImage(img);
+    setSelectedAlert(alert);
+    setEvidenceModalOpen(true);
+  };
+
+  const closeEvidence = () => {
+    setEvidenceModalOpen(false);
+    setEvidenceImage(null);
+    setSelectedAlert(null);
+  };
+
+  // Fetch alerts on mount and when alerts tab is active
+  useEffect(() => {
+    fetchAlerts();
+    
+    // Set up interval to periodically fetch alerts when on alerts tab
+    let interval;
+    if (activeTab === 'alerts') {
+      interval = setInterval(fetchAlerts, 2000); // Poll every 2 seconds
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [activeTab]);
 
   return (
     <div className="dashboard">
@@ -346,36 +460,50 @@ const Dashboard = () => {
                     </div>
 
                     <div className="camera-preview">
-                      {/* Each camera shows ONLY its processed output in its region */}
+                      {/* Consistent video display area for all camera types */}
                       {processedUrls[camera.id] ? (
                         camera.type === 'testing' ? (
+                          // Testing camera shows video
                           <video
-                            key={processedUrls[camera.id]}          // force reload when URL changes
+                            key={processedUrls[camera.id]}
                             src={processedUrls[camera.id]}
                             controls
                             autoPlay
                             playsInline
                             muted
-                            preload="auto"
-                            onCanPlay={(e) => { try { e.currentTarget.play(); } catch (_) {} }}
-                            onError={(e) => { console.error('Video playback error', e); }}
-                            className="video-feed"
+                            style={{ width: '100%', maxHeight: 360, backgroundColor: '#000' }}
+                            onCanPlay={(e) => { try { e.currentTarget.play(); } catch (_) { } }}
+                            onError={(e) => { console.error('Video playback error', e); alert('Video playback failed - check console'); }}
                           />
                         ) : (
+                          // Webcam and CCTV show image stream
                           <img
                             key={processedUrls[camera.id]}
                             src={processedUrls[camera.id]}
                             alt="Processed stream"
-                            className="video-feed"
-                            style={{ objectFit: 'cover', width: '100%', height: '100%' }}
+                            style={{ 
+                              width: '100%', 
+                              maxHeight: 360, 
+                              objectFit: 'contain',
+                              backgroundColor: '#000'
+                            }}
                             onError={(e) => { console.error('Stream display error', e); }}
                           />
                         )
                       ) : (
-                        <div className="video-placeholder">
+                        // Placeholder when no output
+                        <div className="video-placeholder" style={{
+                          height: '360px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: '#000',
+                          color: '#fff',
+                          borderRadius: '4px'
+                        }}>
                           {camera.type === 'testing' ? 'Upload and start processing to see results' :
-                           camera.type === 'webcam' ? 'Start detection to stream processed output here' :
-                           'Start CCTV to see processed output here'}
+                           camera.type === 'webcam' ? 'Start detection to see processed output' :
+                           'Start CCTV to see processed output'}
                         </div>
                       )}
                     </div>
@@ -396,55 +524,59 @@ const Dashboard = () => {
                           </label>
                           <button
                             className="primary-btn"
-                            onClick={(e) => {e.preventDefault(); startProcessingTest(camera.id)}}
+                            onClick={(e) => { e.preventDefault(); startProcessingTest(camera.id) }}
                             style={{ marginLeft: 8 }}
                           >
                             ▶️ Start Processing
                           </button>
+                          <button
+                            className="clear-btn"
+                            onClick={() => clearProcessedOutput(camera.id)}
+                            style={{ marginLeft: 8 }}
+                          >
+                            🗑️ Clear Output
+                          </button>
                         </>
                       )}
 
-                      {/* Webcam: start/stop recording (hidden raw), processed output will appear above */}
+                      {/* Webcam: single start/stop button */}
                       {camera.type === 'webcam' && (
-                        <>
-                          <button
-                            className={`stream-btn ${streaming[camera.id] ? 'streaming' : ''}`}
-                            onClick={() => streaming[camera.id] ? stopWebcamRecording(camera.id) : startWebcamRecording(camera.id)}
-                          >
-                            {streaming[camera.id] ? '⏹️ Stop Detection' : '▶️ Start Detection'}
-                          </button>
-                        </>
+                        <button
+                          className={`stream-btn ${streaming[camera.id] ? 'streaming' : ''}`}
+                          onClick={() => streaming[camera.id] ? stopWebcamRecording(camera.id) : startWebcamRecording(camera.id)}
+                        >
+                          {streaming[camera.id] ? '⏹️ Stop Detection' : '▶️ Start Detection'}
+                        </button>
                       )}
 
-                      {/* CCTV: start/stop processing and RTSP input */}
+                      {/* CCTV: start/stop processing */}
                       {camera.type === 'cc' && (
-                        <>
-                          <button
-                            className={`stream-btn ${streaming[camera.id] ? 'streaming' : ''}`}
-                            onClick={() => streaming[camera.id] ? stopCCTVProcessing(camera.id) : startCCTVProcessing(camera.id)}
-                          >
-                            {streaming[camera.id] ? '⏹️ Stop CCTV' : '▶️ Start CCTV'}
-                          </button>
-                        </>
+                        <button
+                          className={`stream-btn ${streaming[camera.id] ? 'streaming' : ''}`}
+                          onClick={() => streaming[camera.id] ? stopCCTVProcessing(camera.id) : startCCTVProcessing(camera.id)}
+                        >
+                          {streaming[camera.id] ? '⏹️ Stop CCTV' : '▶️ Start CCTV'}
+                        </button>
                       )}
                     </div>
 
                     {/* CCTV RTSP input area */}
                     {camera.type === 'cc' && (
-                      <div className="cctv-settings">
+                      <div className="cctv-settings" style={{ marginTop: '10px' }}>
                         <input
                           type="text"
                           placeholder="RTSP URL (e.g., rtsp://ip:554/stream)"
                           value={camerasState[camera.id]?.rtspUrl || ''}
                           onChange={(e) => setCamerasState(prev => ({ ...prev, [camera.id]: { ...(prev[camera.id] || {}), rtspUrl: e.target.value } }))}
                           className="rtsp-input"
+                          style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                         />
                       </div>
                     )}
 
-                    {/* Small output label / status */}
+                    {/* Status message */}
                     <div style={{ marginTop: 8, fontSize: 13, color: '#6b7280' }}>
-                      {processedUrls[camera.id] ? 'Processed output below' : 'No processed output yet'}
+                      {processedUrls[camera.id] ? 'Processed output displayed above' : 'No processed output yet'}
                     </div>
                   </div>
                 ))}
@@ -474,49 +606,48 @@ const Dashboard = () => {
               </div>
 
               <div className="alerts-table">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Alert Type</th>
-                      <th>Camera</th>
-                      <th>Severity</th>
-                      <th>Timestamp</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dashboardData.alerts.map(alert => (
-                      <tr key={alert.id}>
-                        <td>
-                          <div className="alert-type">
-                            <div className="alert-dot" style={{backgroundColor: getSeverityColor(alert.severity)}}></div>
-                            {getAlertTypeText(alert.type)}
-                          </div>
-                        </td>
-                        <td>{alert.camera}</td>
-                        <td>
-                          <span className={`severity-badge ${alert.severity}`}>
-                            {alert.severity}
-                          </span>
-                        </td>
-                        <td>{alert.timestamp}</td>
-                        <td>
-                          <span className={`status-badge ${alert.status}`}>
-                            {alert.status}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="action-buttons">
-                            <button className="icon-btn" title="View Evidence">👁️</button>
-                            <button className="icon-btn" title="Mark Reviewed">✅</button>
-                            <button className="icon-btn" title="Delete">🗑️</button>
-                          </div>
-                        </td>
+                {alerts.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
+                    <p>No alerts found. Start monitoring to capture suspicious activities.</p>
+                  </div>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Alert Type</th>
+                        <th>Severity</th>
+                        <th>Timestamp</th>
+                        <th>Camera ID</th>
+                        <th>Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {alerts.map(alert => (
+                        <tr key={alert.id}>
+                          <td>
+                            <div className="alert-type">
+                              <div className="alert-dot" style={{ backgroundColor: getSeverityColor(alert.severity) }}></div>
+                              {alert.alert_type === 'web' ? 'Webcam Alert' : 'CCTV Alert'}
+                            </div>
+                          </td>
+                          <td>
+                            <span className={`severity-badge ${alert.severity}`}>
+                              {alert.severity}
+                            </span>
+                          </td>
+                          <td>{alert.timestamp}</td>
+                          <td>{alert.camera_id || 'N/A'}</td>
+                          <td>
+                            <div className="action-buttons">
+                              <button className="icon-btn" title="View Evidence" onClick={() => openEvidence(alert)}>👁️</button>
+                              <button className="icon-btn" title="Delete" onClick={() => deleteAlert(alert.id)}>🗑️</button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           )}
@@ -568,6 +699,22 @@ const Dashboard = () => {
 
         </div>
       </div>
+
+      {/* Evidence Modal */}
+      {evidenceModalOpen && (
+        <div className="modal-overlay" onClick={closeEvidence}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <span className="close-modal" onClick={closeEvidence}>✖️</span>
+            <h2>Evidence Details</h2>
+            <div className="evidence-image-container">
+              <img src={evidenceImage} alt="Evidence" className="evidence-image" />
+            </div>
+            <div className="evidence-actions">
+              <button className="primary-btn" onClick={closeEvidence}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
