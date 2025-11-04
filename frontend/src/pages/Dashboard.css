@@ -518,3 +518,58 @@ th {
 .action-buttons .icon-btn:hover {
   background: rgba(255,255,255,0.04);
 }
+
+/* Evidence Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  position: relative;
+  background: #111318;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  max-width: 90vw;
+  max-height: 90vh;
+  width: fit-content;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+}
+
+.close-modal {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  cursor: pointer;
+  color: #b0b0b0;
+  font-size: 18px;
+}
+
+.close-modal:hover {
+  color: #ffffff;
+}
+
+.evidence-image-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 85vw;
+  max-height: 80vh;
+  overflow: auto;
+}
+
+.evidence-image {
+  max-width: 85vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 6px;
+}

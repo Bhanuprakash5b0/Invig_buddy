@@ -91,7 +91,13 @@ const Dashboard = () => {
       const response = await fetch('http://localhost:5000/api/alerts');
       if (response.ok) {
         const data = await response.json();
-        setAlerts(data.alerts || []);
+        if (data && Array.isArray(data.alerts)) {
+          console.log('Fetched alerts:', data.alerts);
+          setAlerts(data.alerts);
+        } else {
+          console.warn('Unexpected alerts payload:', data);
+          setAlerts([]);
+        }
       } else {
         console.error('Failed to fetch alerts');
       }
@@ -364,9 +370,12 @@ const Dashboard = () => {
   };
 
   const openEvidence = (alert) => {
-    // use alert.imageurl for evidence image
-    const img = alert.imageurl || alert.image || alert.evidenceUrl || '/placeholder-evidence.jpg';
-    setEvidenceImage(img);
+    // prefer backend URL, append cache-buster to avoid stale 404/caching
+    let img = alert?.imageurl || alert?.image || alert?.evidenceUrl || '/placeholder-evidence.jpg';
+    if (img && typeof img === 'string') {
+      img = `${img}${img.includes('?') ? '&' : '?'}t=${Date.now()}`;
+    }
+    setEvidenceImage(img || '/placeholder-evidence.jpg');
     setEvidenceModalOpen(true);
   };
 

@@ -19,9 +19,11 @@ import threading
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})  # enable CORS for all routes
 
-UPLOAD_FOLDER = 'uploads'
-PROCESSED_FOLDER = 'processed'
-DB_PATH = 'invigilation.db'
+# Use absolute paths anchored to this file's directory to avoid CWD issues
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+PROCESSED_FOLDER = os.path.join(BASE_DIR, 'processed')
+DB_PATH = os.path.join(BASE_DIR, 'invigilation.db')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
@@ -50,7 +52,8 @@ def allowed_file(filename):
 
 # Initialize database
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=5, check_same_thread=False)
+    #conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS alerts (
@@ -90,30 +93,70 @@ def get_severity(confidence):
 
 # Save alert to database
 def save_alert(alert_type, severity, image_filename, imageurl):
-    """Save alert to database with thread safety"""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        # Use current timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute('''
-            INSERT INTO alerts (alert_type, severity, timestamp, imageurl)
-            VALUES (?, ?, ?, ?)
-        ''', (alert_type, severity, timestamp, imageurl))
-        conn.commit()
-        print(f"✅ Alert saved: {alert_type}, {severity}, {imageurl}")
-    except Exception as e:
-        print(f"❌ Error saving alert: {str(e)}")
-        if conn:
-            conn.rollback()
-    finally:
-        if conn:
-            conn.close()
+    """Save alert to database with simple retries to avoid transient SQLite locks"""
+    max_retries = 5
+    retry_delay_seconds = 0.1
+    attempt = 0
+    while attempt < max_retries:
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=5)
+            cursor = conn.cursor()
+            # Use current timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute('''
+                INSERT INTO alerts (alert_type, severity, timestamp, imageurl)
+                VALUES (?, ?, ?, ?)
+            ''', (alert_type, severity, timestamp, imageurl))
+            conn.commit()
+            print(f"✅ Alert saved: {alert_type}, {severity}, {imageurl}")
+            return
+        except sqlite3.OperationalError as e:
+            # Handle database locked or busy
+            if 'locked' in str(e).lower() or 'busy' in str(e).lower():
+                attempt += 1
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                    conn.close()
+                time.sleep(retry_delay_seconds)
+                continue
+            else:
+                print(f"❌ SQLite error saving alert: {str(e)}")
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                    conn.close()
+                break
+        except Exception as e:
+            print(f"❌ Error saving alert: {str(e)}")
+            if conn:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+                conn.close()
+            break
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+    print("⚠️ Gave up saving alert after retries")
 
 # Initialize database on startup
+# threading.Thread(
+#                 target=save_alert,
+#                 args=('web','high','webcam_2_20251103_123846.jpg', r'C:\Users\palab\OneDrive\Desktop\Major Project\Invigilation_buddy1\backend\processed\webcam_2_20251103_123846.jpg'),
+#                 daemon=False
+#                 ).start()
+#save_alert('web','high','webcam_2_20251103_123846.jpg', r'C:\Users\palab\OneDrive\Desktop\Major Project\Invigilation_buddy1\backend\processed\webcam_2_20251103_123846.jpg')
 init_db()
-
 # ================================
 #  ROUTE: Upload + Process Video
 # ================================
@@ -152,6 +195,7 @@ def process_video():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
+    frame_count = 0
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -160,6 +204,26 @@ def process_video():
         results = model(frame, verbose=False)
         annotated = results[0].plot()
         out.write(annotated)
+
+        # Periodically check for alerts and save annotated frames to DB
+        frame_count += 1
+        if frame_count % 5 == 0:  # check every 5th frame
+            has_alert, class_id, confidence = check_alerts(results)
+            if has_alert:
+                severity = get_severity(confidence)
+                timestamp_img = datetime.now().strftime("%Y%m%d_%H%M%S")
+                image_filename = f"video_{camera_id}_{timestamp_img}.jpg"
+                image_path = os.path.join(PROCESSED_FOLDER, image_filename)
+                try:
+                    cv2.imwrite(image_path, annotated)
+                    imageurl = f"{request.host_url.rstrip('/')}/processed/{image_filename}"
+                    threading.Thread(
+                        target=save_alert,
+                        args=('video', severity, image_filename, imageurl),
+                        daemon=True
+                    ).start()
+                except Exception as e:
+                    print(f"❌ Failed saving video alert frame: {str(e)}")
 
     cap.release()
     out.release()
@@ -248,6 +312,7 @@ def webcam_stream(camera_id):
             return
         
         frame_count = 0  # Counter to avoid processing every single frame
+        last_annotated_frame = None  # cache last annotated frame to reduce load
             
         while True:
             success, frame = cap.read()
@@ -258,40 +323,50 @@ def webcam_stream(camera_id):
             process_this_frame = (frame_count % 5 == 0)  # Process every 5th frame for alerts
                 
             try:
-                # Process frame with ML model and get annotated frame
-                results = model(frame, verbose=False)
-                processed_frame = results[0].plot()  # Get the annotated frame
+                # Run inference only on selected frames to reduce load
+                if process_this_frame or last_annotated_frame is None:
+                    results = model(frame, verbose=False)
+                    processed_frame = results[0].plot()  # Get the annotated frame
+                    last_annotated_frame = processed_frame
+                else:
+                    processed_frame = last_annotated_frame
                 
                 # Check for alerts and save if detected
                 if process_this_frame:
+                    # Ensure results exists when checking alerts (only when we ran inference)
                     has_alert, class_id, confidence = check_alerts(results)
                     if has_alert:
                         severity = get_severity(confidence)
                         class_name = CLASS_NAMES.get(class_id, 'unknown')
                         
-                        # Save annotated frame to uploads folder
+                        # Save annotated frame to processed folder
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         image_filename = f"webcam_{camera_id}_{timestamp}.jpg"
-                        image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                        image_path = os.path.join(PROCESSED_FOLDER, image_filename)
                         cv2.imwrite(image_path, processed_frame)
                         
                         # Create image URL
-                        imageurl = f"{request.host_url.rstrip('/')}/uploads/{image_filename}"
+                        imageurl = f"{request.host_url.rstrip('/')}/processed/{image_filename}"
                         
-                        # Save alert to database in background
-                        with db_lock:
-                            threading.Thread(
-                                target=save_alert,
-                                args=('web', severity, image_filename, imageurl),
-                                daemon=True
-                            ).start()
+                        # Save alert to database in background (no lock needed per-connection)
+                        threading.Thread(
+                            target=save_alert,
+                            args=('web', severity, image_filename, imageurl),
+                            daemon=False
+                        ).start()
                 
                 # Encode frame to base64
-                _, buffer = cv2.imencode('.jpg', processed_frame)
+                ok, buffer = cv2.imencode('.jpg', processed_frame)
+                if not ok:
+                    continue
                 frame_bytes = base64.b64encode(buffer).decode('utf-8')
                 
                 # Send the frame data
-                yield f"data: {json.dumps({'image': frame_bytes})}\n\n"
+                try:
+                    yield f"data: {json.dumps({'image': frame_bytes})}\n\n"
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    # client disconnected; stop streaming gracefully
+                    break
                 
                 time.sleep(1/30)  # Cap at 30 FPS
                 
@@ -375,29 +450,33 @@ def cctv_stream(camera_id):
                         severity = get_severity(confidence)
                         class_name = CLASS_NAMES.get(class_id, 'unknown')
                         
-                        # Save annotated frame to uploads folder
+                        # Save annotated frame to processed folder
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         image_filename = f"cctv_{camera_id}_{timestamp}.jpg"
-                        image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+                        image_path = os.path.join(PROCESSED_FOLDER, image_filename)
                         cv2.imwrite(image_path, processed_frame)
                         
                         # Create image URL
-                        imageurl = f"{request.host_url.rstrip('/')}/uploads/{image_filename}"
+                        imageurl = f"{request.host_url.rstrip('/')}/processed/{image_filename}"
                         
                         # Save alert to database in background
-                        with db_lock:
-                            threading.Thread(
-                                target=save_alert,
-                                args=('cctv', severity, image_filename, imageurl),
-                                daemon=True
-                            ).start()
+                        threading.Thread(
+                            target=save_alert,
+                            args=('cctv', severity, image_filename, imageurl),
+                            daemon=True
+                        ).start()
                 
                 # Encode frame to base64
-                _, buffer = cv2.imencode('.jpg', processed_frame)
+                ok, buffer = cv2.imencode('.jpg', processed_frame)
+                if not ok:
+                    continue
                 frame_bytes = base64.b64encode(buffer).decode('utf-8')
                 
                 # Send frame data
-                yield f"data: {json.dumps({'image': frame_bytes})}\n\n"
+                try:
+                    yield f"data: {json.dumps({'image': frame_bytes})}\n\n"
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    break
                 
                 time.sleep(1/30)  # Cap at 30 FPS
                 
@@ -451,12 +530,19 @@ def get_alerts():
         
         alerts = []
         for row in rows:
+            raw_url = row[4]
+            # Normalize to HTTP URL in case legacy rows stored local filesystem paths
+            if isinstance(raw_url, str) and not raw_url.lower().startswith('http'): 
+                filename = os.path.basename(raw_url)
+                normalized_url = f"{request.host_url.rstrip('/')}/processed/{filename}"
+            else:
+                normalized_url = raw_url
             alerts.append({
                 'id': row[0],
                 'alert_type': row[1],
                 'severity': row[2],
                 'timestamp': row[3],
-                'imageurl': row[4]
+                'imageurl': normalized_url
             })
         
         return jsonify({'alerts': alerts}), 200
@@ -483,7 +569,7 @@ def delete_alert(alert_id):
         image_filename = imageurl.split('/')[-1]
         if '?' in image_filename:
             image_filename = image_filename.split('?')[0]
-        image_path = os.path.join(UPLOAD_FOLDER, image_filename)
+        image_path = os.path.join(PROCESSED_FOLDER, image_filename)
         
         # Delete from database
         cursor.execute('DELETE FROM alerts WHERE id = ?', (alert_id,))
